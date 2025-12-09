@@ -34,21 +34,21 @@ jobs:
       environment: TEST
 
       steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
+       - name: Checkout source
+       - uses: actions/checkout@v4
 
-        - name: Set up JDK 17
-          uses: actions/setup-java@v4
-          with:
-            distribution: 'temurin'
-            java-version: '17'
+       - name: Set up Java 17
+         uses: actions/setup-java@v4
+         with:
+           distribution: 'temurin'
+           java-version: '17'
 
-        - name: Build WAR
-          run: mvn clean package -DskipTests
+       - name: Build WAR
+         run: mvn clean package -DskipTests
 
-        - name: Deploy to TEST Tomcat
-          run: |
-            curl -v -u ${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }} \
+       - name: Deploy to TEST Tomcat
+         run: |
+           curl -v -u "${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }}" \
             -T target/TrainBook-1.0.0-SNAPSHOT.war \
             "http://${{ secrets.TOMCAT_HOST_TEST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
 
