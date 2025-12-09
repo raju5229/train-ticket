@@ -23,17 +23,20 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # NO SONARQUBE AT ALL
       - name: Build WAR
         run: mvn -B clean package
 
-      - name: Upload Artifact
+      - name: Upload WAR Artifact
         uses: actions/upload-artifact@v4
         with:
           name: warfile
           path: target/*.war
 
 
-  # ---------------------- DEV ----------------------
+  # ---------------------------------------------------
+  # ---------------------- DEV -------------------------
+  # ---------------------------------------------------
   deploy_dev:
     needs: build
     if: github.ref == 'refs/heads/dev'
@@ -48,19 +51,19 @@ jobs:
       - name: Deploy to DEV Tomcat
         run: |
           WAR_FILE=$(ls *.war)
-          echo "WAR file detected: $WAR_FILE"
+          echo "Deploying $WAR_FILE to DEV..."
 
-          echo "Undeploying old app..."
           curl -s -u "${{ secrets.TOMCAT_USER_DEV }}:${{ secrets.TOMCAT_PASSWORD_DEV }}" \
             "http://${{ secrets.TOMCAT_HOST_DEV }}/manager/text/undeploy?path=/train-dev"
 
-          echo "Deploying new WAR..."
           curl -s -u "${{ secrets.TOMCAT_USER_DEV }}:${{ secrets.TOMCAT_PASSWORD_DEV }}" \
             -T "$WAR_FILE" \
             "http://${{ secrets.TOMCAT_HOST_DEV }}/manager/text/deploy?path=/train-dev&update=true"
 
 
-  # ---------------------- TEST ----------------------
+  # ---------------------------------------------------
+  # ---------------------- TEST ------------------------
+  # ---------------------------------------------------
   deploy_test:
     needs: build
     if: github.ref == 'refs/heads/test'
@@ -75,6 +78,7 @@ jobs:
       - name: Deploy to TEST Tomcat
         run: |
           WAR_FILE=$(ls *.war)
+          echo "Deploying $WAR_FILE to TEST..."
 
           curl -s -u "${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }}" \
             "http://${{ secrets.TOMCAT_HOST_TEST }}/manager/text/undeploy?path=/train-test"
@@ -84,7 +88,9 @@ jobs:
             "http://${{ secrets.TOMCAT_HOST_TEST }}/manager/text/deploy?path=/train-test&update=true"
 
 
-  # ---------------------- PREPROD ----------------------
+  # ---------------------------------------------------
+  # -------------------- PRE-PROD ----------------------
+  # ---------------------------------------------------
   deploy_preprod:
     needs: build
     if: github.ref == 'refs/heads/preprod'
@@ -96,9 +102,10 @@ jobs:
         with:
           name: warfile
 
-      - name: Deploy to PREPROD Tomcat
+      - name: Deploy to PRE-PROD Tomcat
         run: |
           WAR_FILE=$(ls *.war)
+          echo "Deploying $WAR_FILE to PREPROD..."
 
           curl -s -u "${{ secrets.TOMCAT_USER_PRE_PROD }}:${{ secrets.TOMCAT_PASSWORD_PRE_PROD }}" \
             "http://${{ secrets.TOMCAT_HOST_PRE_PROD }}/manager/text/undeploy?path=/train-preprod"
@@ -108,7 +115,9 @@ jobs:
             "http://${{ secrets.TOMCAT_HOST_PRE_PROD }}/manager/text/deploy?path=/train-preprod&update=true"
 
 
-  # ---------------------- PROD ----------------------
+  # ---------------------------------------------------
+  # ---------------------- PROD ------------------------
+  # ---------------------------------------------------
   deploy_prod:
     needs: build
     if: github.ref == 'refs/heads/main'
@@ -123,6 +132,7 @@ jobs:
       - name: Deploy to PROD Tomcat
         run: |
           WAR_FILE=$(ls *.war)
+          echo "Deploying $WAR_FILE to PROD..."
 
           curl -s -u "${{ secrets.TOMCAT_USER_PROD }}:${{ secrets.TOMCAT_PASSWORD_PROD }}" \
             "http://${{ secrets.TOMCAT_HOST_PROD }}/manager/text/undeploy?path=/train-prod"
