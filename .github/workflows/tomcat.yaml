@@ -29,21 +29,21 @@ jobs:
 
   # ---------------- TEST Deployment ----------------
   deploy-test:
-  runs-on: ubuntu-latest
-  needs: deploy-dev
-  environment: TEST
-  steps:
-    - name: Download WAR artifact from DEV build
-      uses: actions/download-artifact@v3
-      with:
-        name: trainbook-war
-        path: target/
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    environment: TEST
+    steps:
+       - name: Download WAR artifact from DEV build
+         uses: actions/download-artifact@v3
+         with:
+          name: trainbook-war
+          path: target/
 
-    - name: Deploy to TEST Tomcat
-      run: |
-        curl -v -u ${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }} \
-        -T target/TrainBook-1.0.0-SNAPSHOT.war \
-        "http://${{ secrets.TOMCAT_HOST_TEST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
+       - name: Deploy to TEST Tomcat
+         run: |
+           curl -v -u ${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }} \
+           -T target/TrainBook-1.0.0-SNAPSHOT.war \
+           "http://${{ secrets.TOMCAT_HOST_TEST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
 
 
   # ---------------- PRE-PROD Deployment ----------------
