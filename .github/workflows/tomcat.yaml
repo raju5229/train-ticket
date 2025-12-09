@@ -31,12 +31,11 @@ jobs:
 
 
   # ---------------------------------------------
-  #                   DEV
+  #                   DEV (no environment protection)
   # ---------------------------------------------
   deploy_dev:
     needs: build
     runs-on: ubuntu-latest
-    environment: TOMCAT_DEV
 
     steps:
       - uses: actions/download-artifact@v4
@@ -57,12 +56,11 @@ jobs:
 
 
   # ---------------------------------------------
-  #                   TEST
+  #                   TEST (no environment protection)
   # ---------------------------------------------
   deploy_test:
     needs: deploy_dev
     runs-on: ubuntu-latest
-    environment: TOMCAT_TEST
 
     steps:
       - uses: actions/download-artifact@v4
@@ -83,12 +81,11 @@ jobs:
 
 
   # ---------------------------------------------
-  #               PRE-PRODUCTION
+  #               PRE-PRODUCTION (no environment protection)
   # ---------------------------------------------
   deploy_preprod:
     needs: deploy_test
     runs-on: ubuntu-latest
-    environment: TOMCAT_PRE_PROD
 
     steps:
       - uses: actions/download-artifact@v4
@@ -109,12 +106,12 @@ jobs:
 
 
   # ---------------------------------------------
-  #                   PRODUCTION
+  #                   PRODUCTION (with environment protection)
   # ---------------------------------------------
   deploy_prod:
     needs: deploy_preprod
     runs-on: ubuntu-latest
-    environment: TOMCAT_PROD
+    environment: TOMCAT_PROD   # <--- ONLY prod environment has protection
 
     steps:
       - uses: actions/download-artifact@v4
