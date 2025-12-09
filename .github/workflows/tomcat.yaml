@@ -1,35 +1,119 @@
-name:  CI/CD pipelie to deploy to tomcat
+name: Tomcat Multi-Environment Deployment
+
 on:
   push:
-    branches: master
+    branches:
+      - dev
+      - test
+      - preprod
+      - main
+  workflow_dispatch:
+
 jobs:
-   build-deploy:
-     runs-on: ubuntu-latest
-     steps:
-       - name: checkout code
-         uses: actions/checkout@v3
-       - name: setup-jdk 
-         uses: actions/setup-java@v3
-         with:
-          distribution: 'temurin'
-          java-version: '17'   # Updated Java version
-       - name: maven validate
-         run: mvn validate
-       - name: maven compile
-         run: mvn compile
-       - name: maven test
-         run: mvn test
-       - name: maven package
-         run: mvn package
-       - name: sonar code quality 
-         run: |
-          mvn clean verify sonar:sonar \
-            -Dsonar.projectKey=train-ticket \
-            -Dsonar.host.url="${{ secrets.SONARQUBE_HOST }}" \
-            -Dsonar.login="${{ secrets.SONARQUBE_TOKEN }}"
-         
-      
-       
-     
-         
-    
+
+  build:
+    name: Build WAR File
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build WAR (Maven)
+        run: mvn clean package
+
+      - name: Save WAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-war
+          path: target/*.war
+
+
+  # ----------------------- DEV DEPLOYMENT -----------------------
+  deploy_dev:
+    name: Deploy to TOMCAT_DEV
+    needs: build
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    environment: TOMCAT_DEV
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-war
+
+      - name: Deploy to DEV Tomcat
+        run: |
+          echo "Deploying to DEV..."
+          curl -u "${{ secrets.TOMCAT_USER_DEV }}:${{ secrets.TOMCAT_PASSWORD_DEV }}" \
+            --upload-file *.war \
+            "http://${{ secrets.TOMCAT_HOST_DEV }}/manager/text/deploy?path=/train-dev&update=true"
+
+
+  # ----------------------- TEST DEPLOYMENT -----------------------
+  deploy_test:
+    name: Deploy to TOMCAT_TEST
+    needs: build
+    if: github.ref == 'refs/heads/test'
+    runs-on: ubuntu-latest
+    environment: TOMCAT_TEST
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-war
+
+      - name: Deploy to TEST Tomcat
+        run: |
+          echo "Deploying to TEST..."
+          curl -u "${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }}" \
+            --upload-file *.war \
+            "http://${{ secrets.TOMCAT_HOST_TEST }}/manager/text/deploy?path=/train-test&update=true"
+
+
+  # ----------------------- PRE-PROD DEPLOYMENT -----------------------
+  deploy_preprod:
+    name: Deploy to TOMCAT_PRE_PROD
+    needs: build
+    if: github.ref == 'refs/heads/preprod'
+    runs-on: ubuntu-latest
+    environment: TOMCAT_PRE_PROD
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-war
+
+      - name: Deploy to PRE-PROD Tomcat
+        run: |
+          echo "Deploying to PRE-PROD..."
+          curl -u "${{ secrets.TOMCAT_USER_PRE_PROD }}:${{ secrets.TOMCAT_PASSWORD_PRE_PROD }}" \
+            --upload-file *.war \
+            "http://${{ secrets.TOMCAT_HOST_PRE_PROD }}/manager/text/deploy?path=/train-preprod&update=true"
+
+
+  # ----------------------- PROD DEPLOYMENT -----------------------
+  deploy_prod:
+    name: Deploy to TOMCAT_PROD
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: TOMCAT_PROD
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-war
+
+      - name: Deploy to PROD Tomcat
+        run: |
+          echo "Deploying to PROD..."
+          curl -u "${{ secrets.TOMCAT_USER_PROD }}:${{ secrets.TOMCAT_PASSWORD_PROD }}" \
+            --upload-file *.war \
+            "http://${{ secrets.TOMCAT_HOST_PROD }}/manager/text/deploy?path=/train-prod&update=true"
