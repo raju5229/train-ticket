@@ -12,12 +12,10 @@ on:
 jobs:
 
   build:
-    name: Build WAR File
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -25,19 +23,18 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Build WAR (Maven)
-        run: mvn clean package
+      - name: Build WAR
+        run: mvn -B clean package
 
-      - name: Save WAR Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-war
+          name: warfile
           path: target/*.war
 
 
-  # ----------------------- DEV DEPLOYMENT -----------------------
+  # ---------------------- DEV ----------------------
   deploy_dev:
-    name: Deploy to TOMCAT_DEV
     needs: build
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
@@ -46,19 +43,25 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: app-war
+          name: warfile
 
       - name: Deploy to DEV Tomcat
         run: |
-          echo "Deploying to DEV..."
-          curl -u "${{ secrets.TOMCAT_USER_DEV }}:${{ secrets.TOMCAT_PASSWORD_DEV }}" \
-            --upload-file *.war \
+          WAR_FILE=$(ls *.war)
+          echo "WAR file detected: $WAR_FILE"
+
+          echo "Undeploying old app..."
+          curl -s -u "${{ secrets.TOMCAT_USER_DEV }}:${{ secrets.TOMCAT_PASSWORD_DEV }}" \
+            "http://${{ secrets.TOMCAT_HOST_DEV }}/manager/text/undeploy?path=/train-dev"
+
+          echo "Deploying new WAR..."
+          curl -s -u "${{ secrets.TOMCAT_USER_DEV }}:${{ secrets.TOMCAT_PASSWORD_DEV }}" \
+            -T "$WAR_FILE" \
             "http://${{ secrets.TOMCAT_HOST_DEV }}/manager/text/deploy?path=/train-dev&update=true"
 
 
-  # ----------------------- TEST DEPLOYMENT -----------------------
+  # ---------------------- TEST ----------------------
   deploy_test:
-    name: Deploy to TOMCAT_TEST
     needs: build
     if: github.ref == 'refs/heads/test'
     runs-on: ubuntu-latest
@@ -67,19 +70,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: app-war
+          name: warfile
 
       - name: Deploy to TEST Tomcat
         run: |
-          echo "Deploying to TEST..."
-          curl -u "${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }}" \
-            --upload-file *.war \
+          WAR_FILE=$(ls *.war)
+
+          curl -s -u "${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }}" \
+            "http://${{ secrets.TOMCAT_HOST_TEST }}/manager/text/undeploy?path=/train-test"
+
+          curl -s -u "${{ secrets.TOMCAT_USER_TEST }}:${{ secrets.TOMCAT_PASSWORD_TEST }}" \
+            -T "$WAR_FILE" \
             "http://${{ secrets.TOMCAT_HOST_TEST }}/manager/text/deploy?path=/train-test&update=true"
 
 
-  # ----------------------- PRE-PROD DEPLOYMENT -----------------------
+  # ---------------------- PREPROD ----------------------
   deploy_preprod:
-    name: Deploy to TOMCAT_PRE_PROD
     needs: build
     if: github.ref == 'refs/heads/preprod'
     runs-on: ubuntu-latest
@@ -88,19 +94,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: app-war
+          name: warfile
 
-      - name: Deploy to PRE-PROD Tomcat
+      - name: Deploy to PREPROD Tomcat
         run: |
-          echo "Deploying to PRE-PROD..."
-          curl -u "${{ secrets.TOMCAT_USER_PRE_PROD }}:${{ secrets.TOMCAT_PASSWORD_PRE_PROD }}" \
-            --upload-file *.war \
+          WAR_FILE=$(ls *.war)
+
+          curl -s -u "${{ secrets.TOMCAT_USER_PRE_PROD }}:${{ secrets.TOMCAT_PASSWORD_PRE_PROD }}" \
+            "http://${{ secrets.TOMCAT_HOST_PRE_PROD }}/manager/text/undeploy?path=/train-preprod"
+
+          curl -s -u "${{ secrets.TOMCAT_USER_PRE_PROD }}:${{ secrets.TOMCAT_PASSWORD_PRE_PROD }}" \
+            -T "$WAR_FILE" \
             "http://${{ secrets.TOMCAT_HOST_PRE_PROD }}/manager/text/deploy?path=/train-preprod&update=true"
 
 
-  # ----------------------- PROD DEPLOYMENT -----------------------
+  # ---------------------- PROD ----------------------
   deploy_prod:
-    name: Deploy to TOMCAT_PROD
     needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -109,11 +118,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: app-war
+          name: warfile
 
       - name: Deploy to PROD Tomcat
         run: |
-          echo "Deploying to PROD..."
-          curl -u "${{ secrets.TOMCAT_USER_PROD }}:${{ secrets.TOMCAT_PASSWORD_PROD }}" \
-            --upload-file *.war \
+          WAR_FILE=$(ls *.war)
+
+          curl -s -u "${{ secrets.TOMCAT_USER_PROD }}:${{ secrets.TOMCAT_PASSWORD_PROD }}" \
+            "http://${{ secrets.TOMCAT_HOST_PROD }}/manager/text/undeploy?path=/train-prod"
+
+          curl -s -u "${{ secrets.TOMCAT_USER_PROD }}:${{ secrets.TOMCAT_PASSWORD_PROD }}" \
+            -T "$WAR_FILE" \
             "http://${{ secrets.TOMCAT_HOST_PROD }}/manager/text/deploy?path=/train-prod&update=true"
