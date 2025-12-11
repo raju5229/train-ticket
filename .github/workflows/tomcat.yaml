@@ -19,7 +19,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-          cache: 'maven'
+          cache: maven
 
       - name: Create secure Maven settings
         env:
@@ -28,20 +28,19 @@ jobs:
         run: |
           mkdir -p $HOME/.m2
           umask 077
-          cat > $HOME/.m2/settings.xml <<'EOF'
+          cat > $HOME/.m2/settings.xml <<EOF
           <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                     xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
             <servers>
               <server>
                 <id>nexus</id>
-                <username>${env.NEXUS_USERNAME}</username>
-                <password>${env.NEXUS_PASSWORD}</password>
+                <username>${NEXUS_USERNAME}</username>
+                <password>${NEXUS_PASSWORD}</password>
               </server>
             </servers>
           </settings>
           EOF
-          echo "Created ~/.m2/settings.xml (permissions: $(stat -c %a $HOME/.m2/settings.xml))"
 
       - name: Network reachability checks (Nexus + Tomcat)
         env:
@@ -50,29 +49,41 @@ jobs:
           TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
           TOMCAT_PORT: 8080
         run: |
-          set -e
-          echo "Testing nexus HTTP endpoint..."
-          # Try multiple times with backoff
+          set -euo pipefail
+          echo "Checking Nexus HTTP endpoint http://${NEXUS_HOST}:${NEXUS_PORT}/ ..."
+          # try curl with retries
           for i in 1 2 3; do
-            echo "Attempt $i: curl -I http://${NEXUS_HOST}:${NEXUS_PORT}/"
-            timeout 8 curl -I --max-time 8 http://${NEXUS_HOST}:${NEXUS_PORT}/ && break || sleep $((i*3))
+            if timeout 8 curl -sSf -I "http://${NEXUS_HOST}:${NEXUS_PORT}/"; then
+              echo "Nexus HTTP reachable"
+              break
+            else
+              echo "Attempt $i: Nexus not reachable yet"
+              sleep $((i * 3))
+            fi
             if [ $i -eq 3 ]; then
               echo "ERROR: Nexus HTTP not reachable from runner at ${NEXUS_HOST}:${NEXUS_PORT}"
-              nc -vz ${NEXUS_HOST} ${NEXUS_PORT} || true
+              if command -v nc >/dev/null 2>&1; then
+                nc -vz "${NEXUS_HOST}" "${NEXUS_PORT}" || true
+              else
+                echo "nc not installed; skipping TCP check"
+              fi
               exit 2
             fi
           done
 
-          echo "Testing tomcat manager endpoint reachability..."
-          timeout 8 curl -I --max-time 8 http://${TOMCAT_HOST}:${TOMCAT_PORT}/ || {
-            echo "WARNING: Tomcat host ${TOMCAT_HOST}:${TOMCAT_PORT} not reachable from runner — tomcat deploy will fail"
-          }
+          echo "Checking Tomcat manager endpoint reachability..."
+          if timeout 8 curl -sSf -I "http://${TOMCAT_HOST}:${TOMCAT_PORT}/" >/dev/null 2>&1; then
+            echo "Tomcat host reachable (HTTP probe)"
+          else
+            echo "WARNING: Tomcat host ${TOMCAT_HOST}:${TOMCAT_PORT} not reachable from runner — tomcat deploy may fail"
+          fi
 
       - name: Validate, compile, test, package
         run: |
           mvn -B validate
           mvn -B -q compile
-          mvn -B -q test || echo "Tests failed (non-blocking)"; true
+          # Tests are blocking: fail the job if tests fail
+          mvn -B -q test
           mvn -B -q package
 
       - name: Verify WAR file
@@ -90,23 +101,41 @@ jobs:
         run: |
           set -o pipefail
           echo "Running mvn deploy (will print debug on failure)"
-          mvn -B deploy || { echo "mvn deploy failed — re-running with -X for debug"; mvn -X deploy; exit 1; }
+          if mvn -B deploy; then
+            echo "mvn deploy succeeded"
+          else
+            echo "mvn deploy failed — re-running with -X for debug"
+            mvn -X deploy
+            exit 1
+          fi
 
-      - name: Deploy WAR to Tomcat (manager script)
+      - name: Deploy WAR to Tomcat (manager script) with retries
         env:
           TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
           TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
           TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
         run: |
-          WAR_FILE=$(ls target/*.war | head -n1)
-          if [ -z "$WAR_FILE" ]; then
+          set -euo pipefail
+          WAR_FILE=$(ls target/*.war | head -n1 || true)
+          if [ -z "${WAR_FILE}" ]; then
             echo "No WAR found in target/ — aborting"
             exit 1
           fi
-          echo "Deploying $WAR_FILE to Tomcat manager on ${TOMCAT_HOST}:8080"
-          # manager must have role 'manager-script' and the user configured in tomcat-users.xml
-          curl -v --fail -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" -T "${WAR_FILE}" \
-            "http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/TrainBook&update=true" || {
-              echo "Tomcat deploy failed; check manager user and reachability. Exiting."
-              exit 1
-            }
+          echo "Deploying ${WAR_FILE} to Tomcat manager on ${TOMCAT_HOST}:8080"
+          URL="http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/TrainBook&update=true"
+          rc=1
+          for i in 1 2 3; do
+            echo "Attempt ${i}: uploading WAR to Tomcat..."
+            if curl -sS --fail -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" -T "${WAR_FILE}" "${URL}"; then
+              echo "Tomcat deploy succeeded on attempt ${i}"
+              rc=0
+              break
+            else
+              echo "Tomcat deploy attempt ${i} failed"
+              sleep $((i * 3))
+            fi
+          done
+          if [ "${rc}" -ne 0 ]; then
+            echo "Tomcat deploy failed after retries. Common causes: manager-script user not configured, network unreachable, or Tomcat manager access restricted."
+            exit 1
+          fi
