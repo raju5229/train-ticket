@@ -54,7 +54,7 @@ jobs:
 
       - name: verify WAR file
         run: ls -lh target/
-      - name: CI debug: Nexus connectivity and mvn debug
+      - name: CI debug:mvn debug
         run: |
           echo "curl HEAD to Nexus:"
           timeout 10 curl -v -I http://34.227.67.34:8081/ || true
