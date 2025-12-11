@@ -1,6 +1,6 @@
 name: ci/cd pipeline to deploy to tomcat
 
-on: 
+on:
   push:
     branches:
       - master
@@ -8,25 +8,27 @@ on:
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: checkout code
         uses: actions/checkout@v3
-      
+
       - name: set-up jdk
         uses: actions/setup-java@v3
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
+          cache: 'maven'
 
-      # Create secure Maven settings.xml with Nexus creds
-      - name: Configure Maven settings for Nexus
+      - name: Create secure Maven settings.xml with Nexus creds
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USER }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
         run: |
-          mkdir -p ~/.m2
-          cat > ~/.m2/settings.xml <<EOF
+          mkdir -p $HOME/.m2
+          umask 077
+          cat > $HOME/.m2/settings.xml <<EOF
           <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                     xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
@@ -39,56 +41,96 @@ jobs:
             </servers>
           </settings>
           EOF
+          echo "Created $HOME/.m2/settings.xml (permissions: $(stat -c %a $HOME/.m2/settings.xml))"
 
       - name: validate with maven
-        run: mvn validate
+        run: mvn -B validate
 
       - name: compile with maven
-        run: mvn compile
+        run: mvn -B compile
 
       - name: test with maven
-        run: mvn test
+        # tests are blocking: fail the job if tests fail
+        run: mvn -B test
 
       - name: package with maven
-        run: mvn package
+        run: mvn -B package
 
       - name: verify WAR file
-        run: ls -lh target/
+        run: ls -lh target/ || true
+
       - name: CI debug:mvn debug
         run: |
-          echo "curl HEAD to Nexus:"
+          echo "curl HEAD to Nexus (base):"
           timeout 10 curl -v -I http://34.227.67.34:8081/ || true
-          echo "nc test to Nexus:"
+
+          echo "nc test to Nexus (TCP):"
           if command -v nc >/dev/null 2>&1; then
             nc -vz 34.227.67.34 8081 || true
           else
             echo "nc not found; trying bash /dev/tcp"
             timeout 5 bash -c 'echo > /dev/tcp/34.227.67.34/8081' && echo "TCP open" || echo "TCP closed/timeout"
           fi
+
           echo "traceroute (may be slow):"
           if command -v traceroute >/dev/null 2>&1; then
             traceroute -q 1 34.227.67.34 || true
           else
             echo "traceroute not available"
           fi
+
           echo "now run mvn -X deploy for debug (output limited):"
+          # run mvn -X deploy but don't stop the workflow here; we want detailed logs if it fails
           mvn -X deploy | sed -n '1,400p' || true
 
-
       - name: Build, Test and SonarQube Scan
+        if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST != '' }}
         run: |
-          mvn clean verify sonar:sonar \
+          mvn -B -DskipTests clean verify sonar:sonar \
             -Dsonar.projectKey=train-ticket-reservation \
             -Dsonar.host.url="${{ secrets.SONAR_HOST }}" \
             -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
 
-      # Deploy to Nexus using distributionManagement in POM
-       #- name: Publish WAR to Nexus
-       # run: mvn deploy
-
-      # Deploy WAR to Tomcat
-      - name: Deploy to tomcat
+      - name: Publish WAR to Nexus
+        # this uses distributionManagement in your POM (id 'nexus')
         run: |
-          curl -v -u "${{ secrets.TOMCAT_USER }}:${{ secrets.TOMCAT_PASSWORD }}" \
-            -T target/TrainBook-1.0.0-SNAPSHOT.war \
-            "http://${{ secrets.TOMCAT_HOST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
+          set -o pipefail
+          echo "Running mvn deploy (will re-run with -X on failure to capture debug info)"
+          if mvn -B deploy; then
+            echo "mvn deploy succeeded."
+          else
+            echo "mvn deploy failed — re-running with -X for debug."
+            mvn -X deploy
+            exit 1
+          fi
+
+      - name: Deploy WAR to tomcat (manager script) with retries
+        env:
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+          TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+        run: |
+          set -euo pipefail
+          WAR_FILE=$(ls target/*.war | head -n1 || true)
+          if [ -z "${WAR_FILE}" ]; then
+            echo "No WAR found in target/ — aborting"
+            exit 1
+          fi
+          echo "Deploying ${WAR_FILE} to Tomcat manager on ${TOMCAT_HOST}:8080"
+          URL="http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/TrainBook&update=true"
+          rc=1
+          for i in 1 2 3; do
+            echo "Attempt ${i}: uploading WAR to Tomcat..."
+            if curl -sS --fail -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" -T "${WAR_FILE}" "${URL}"; then
+              echo "Tomcat deploy succeeded on attempt ${i}"
+              rc=0
+              break
+            else
+              echo "Tomcat deploy attempt ${i} failed"
+              sleep $((i * 3))
+            fi
+          done
+          if [ "${rc}" -ne 0 ]; then
+            echo "Tomcat deploy failed after retries. Check manager-script role, network reachability, and Tomcat logs."
+            exit 1
+          fi
