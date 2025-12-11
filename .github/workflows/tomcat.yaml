@@ -83,8 +83,8 @@ jobs:
             -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
 
       # Deploy to Nexus using distributionManagement in POM
-      - name: Publish WAR to Nexus
-        run: mvn deploy
+       #- name: Publish WAR to Nexus
+       # run: mvn deploy
 
       # Deploy WAR to Tomcat
       - name: Deploy to tomcat
