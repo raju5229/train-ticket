@@ -54,6 +54,26 @@ jobs:
 
       - name: verify WAR file
         run: ls -lh target/
+      - name: CI debug: Nexus connectivity and mvn debug
+        run: |
+          echo "curl HEAD to Nexus:"
+          timeout 10 curl -v -I http://34.227.67.34:8081/ || true
+          echo "nc test to Nexus:"
+          if command -v nc >/dev/null 2>&1; then
+            nc -vz 34.227.67.34 8081 || true
+          else
+            echo "nc not found; trying bash /dev/tcp"
+            timeout 5 bash -c 'echo > /dev/tcp/34.227.67.34/8081' && echo "TCP open" || echo "TCP closed/timeout"
+          fi
+          echo "traceroute (may be slow):"
+          if command -v traceroute >/dev/null 2>&1; then
+            traceroute -q 1 34.227.67.34 || true
+          else
+            echo "traceroute not available"
+          fi
+          echo "now run mvn -X deploy for debug (output limited):"
+          mvn -X deploy | sed -n '1,400p' || true
+
 
       - name: Build, Test and SonarQube Scan
         run: |
