@@ -1,6 +1,6 @@
 name: ci/cd pipeline to deploy to tomcat
 
-on:
+on: 
   push:
     branches:
       - master
@@ -8,27 +8,25 @@ on:
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
+      - name: checkout code
+        uses: actions/checkout@v3
+      
+      - name: set-up jdk
         uses: actions/setup-java@v3
         with:
-          distribution: temurin
-          java-version: 17
-          cache: maven
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Create secure Maven settings
+      # Create secure Maven settings.xml with Nexus creds
+      - name: Configure Maven settings for Nexus
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USER }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
         run: |
-          mkdir -p $HOME/.m2
-          umask 077
-          cat > $HOME/.m2/settings.xml <<EOF
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<EOF
           <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                     xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
@@ -42,100 +40,35 @@ jobs:
           </settings>
           EOF
 
-      - name: Network reachability checks (Nexus + Tomcat)
-        env:
-          NEXUS_HOST: 34.227.67.34
-          NEXUS_PORT: 8081
-          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
-          TOMCAT_PORT: 8080
+      - name: validate with maven
+        run: mvn validate
+
+      - name: compile with maven
+        run: mvn compile
+
+      - name: test with maven
+        run: mvn test
+
+      - name: package with maven
+        run: mvn package
+
+      - name: verify WAR file
+        run: ls -lh target/
+
+      - name: Build, Test and SonarQube Scan
         run: |
-          set -euo pipefail
-          echo "Checking Nexus HTTP endpoint http://${NEXUS_HOST}:${NEXUS_PORT}/ ..."
-          # try curl with retries
-          for i in 1 2 3; do
-            if timeout 8 curl -sSf -I "http://${NEXUS_HOST}:${NEXUS_PORT}/"; then
-              echo "Nexus HTTP reachable"
-              break
-            else
-              echo "Attempt $i: Nexus not reachable yet"
-              sleep $((i * 3))
-            fi
-            if [ $i -eq 3 ]; then
-              echo "ERROR: Nexus HTTP not reachable from runner at ${NEXUS_HOST}:${NEXUS_PORT}"
-              if command -v nc >/dev/null 2>&1; then
-                nc -vz "${NEXUS_HOST}" "${NEXUS_PORT}" || true
-              else
-                echo "nc not installed; skipping TCP check"
-              fi
-              exit 2
-            fi
-          done
-
-          echo "Checking Tomcat manager endpoint reachability..."
-          if timeout 8 curl -sSf -I "http://${TOMCAT_HOST}:${TOMCAT_PORT}/" >/dev/null 2>&1; then
-            echo "Tomcat host reachable (HTTP probe)"
-          else
-            echo "WARNING: Tomcat host ${TOMCAT_HOST}:${TOMCAT_PORT} not reachable from runner — tomcat deploy may fail"
-          fi
-
-      - name: Validate, compile, test, package
-        run: |
-          mvn -B validate
-          mvn -B -q compile
-          # Tests are blocking: fail the job if tests fail
-          mvn -B -q test
-          mvn -B -q package
-
-      - name: Verify WAR file
-        run: ls -lh target || true
-
-      - name: Sonar (optional)
-        if: ${{ secrets.SONAR_TOKEN != '' }}
-        run: |
-          mvn -B -DskipTests clean verify sonar:sonar \
+          mvn clean verify sonar:sonar \
             -Dsonar.projectKey=train-ticket-reservation \
             -Dsonar.host.url="${{ secrets.SONAR_HOST }}" \
             -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
 
-      - name: Publish WAR to Nexus (with debug on failure)
-        run: |
-          set -o pipefail
-          echo "Running mvn deploy (will print debug on failure)"
-          if mvn -B deploy; then
-            echo "mvn deploy succeeded"
-          else
-            echo "mvn deploy failed — re-running with -X for debug"
-            mvn -X deploy
-            exit 1
-          fi
+      # Deploy to Nexus using distributionManagement in POM
+      - name: Publish WAR to Nexus
+        run: mvn deploy
 
-      - name: Deploy WAR to Tomcat (manager script) with retries
-        env:
-          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
-          TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
-          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
+      # Deploy WAR to Tomcat
+      - name: Deploy to tomcat
         run: |
-          set -euo pipefail
-          WAR_FILE=$(ls target/*.war | head -n1 || true)
-          if [ -z "${WAR_FILE}" ]; then
-            echo "No WAR found in target/ — aborting"
-            exit 1
-          fi
-          echo "Deploying ${WAR_FILE} to Tomcat manager on ${TOMCAT_HOST}:8080"
-          URL="http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/TrainBook&update=true"
-          rc=1
-          for i in 1 2 3; do
-            echo "Attempt ${i}: uploading WAR to Tomcat..."
-            if curl -sS --fail -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" -T "${WAR_FILE}" "${URL}"; then
-              echo "Tomcat deploy succeeded on attempt ${i}"
-              rc=0
-              break
-            else
-              echo "Tomcat deploy attempt ${i} failed"
-              sleep $((i * 3))
-            fi
-          done
-          if [ "${rc}" -ne 0 ]; then
-            echo "Tomcat deploy failed after retries. Common causes: manager-script user not configured, network unreachable, or Tomcat manager access restricted."
-            exit 1
-          fi
+          curl -v -u "${{ secrets.TOMCAT_USER }}:${{ secrets.TOMCAT_PASSWORD }}" \
+            -T target/TrainBook-1.0.0-SNAPSHOT.war \
+            "http://${{ secrets.TOMCAT_HOST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
