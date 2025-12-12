@@ -1,46 +1,29 @@
 name: ci/cd pipeline to deploy to tomcat
 
-on:
+on: 
   push:
     branches:
       - master
 
-permissions:
-  contents: read
-
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
-    env:
-      MAVEN_OPTS: "-Xmx1024m"
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17 (Temurin) and enable Maven caching
-        uses: actions/setup-java@v4
+      - name: checkout code
+        uses: actions/checkout@v3
+      
+      - name: set-up jdk
+        uses: actions/setup-java@v3
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
-          cache: maven
 
-      - name: Cache local Maven repository
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-m2-
-            - name: Configure Maven settings for Nexus
+      # Create secure Maven settings.xml with Nexus creds
+      - name: Configure Maven settings for Nexus
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USER }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-        run: |
-          
-
-          echo "Created settings.xml (IDs shown, password redacted):"
-          sed -n '1,120p' ~/.m2/settings.xml
 
       - name: Validate with Maven
         run: mvn -B validate
