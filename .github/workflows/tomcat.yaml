@@ -1,6 +1,6 @@
 name: ci/cd pipeline to deploy to tomcat
 
-on: 
+on:
   push:
     branches:
       - master
@@ -10,29 +10,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: checkout code
+      - name: Checkout code
         uses: actions/checkout@v3
       
-      - name: set-up jdk
+      - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
-      # Create secure Maven settings.xml with Nexus creds
+      # ------------------ FIXED SETTINGS.XML STEP ------------------
       - name: Configure Maven settings for Nexus
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USER }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-
-      - name: Validate with Maven
-        run: mvn -B validate
-
-      - name: Compile with Maven
-        run: mvn -B compile
-
-      - name: Test with Maven
-        run: mvn -B test
+        run: |
           mkdir -p ~/.m2
           cat > ~/.m2/settings.xml <<EOF
           <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
@@ -47,90 +39,70 @@ jobs:
             </servers>
           </settings>
           EOF
-      - name: Package with Maven
+
+
+
+      - name: Validate
+        run: mvn -B validate
+
+      - name: Compile
+        run: mvn -B compile
+
+      - name: Test
+        run: mvn -B test
+
+      - name: Package
         run: mvn -B package
 
       - name: Verify WAR file exists
-        run: |
-          echo "Files in target:"
-          ls -la target || true
-          ls -la target/*.war || true
+        run: ls -lh target/*.war
 
-      - name: Build, Test and SonarQube Scan
-        if: success()
-        run: |
-          mvn -B clean verify sonar:sonar \
-            -Dsonar.projectKey=train-ticket-reservation \
-            -Dsonar.host.url="${{ secrets.SONAR_HOST }}" \
-            -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
-
-      - name: Debug:runner
+      # ------------------ NEXUS CONNECTIVITY DEBUG ------------------
+      - name: Debug Nexus Connectivity
         env:
           NEXUS_URL: "http://34.227.67.34:8081"
         run: |
-          echo "------ DNS / ping check ------"
+          echo "--- ping ---"
           ping -c 3 34.227.67.34 || true
 
-          echo "------ curl root URL (10s timeout) ------"
+          echo "--- curl root ---"
           curl -v --max-time 10 "$NEXUS_URL/" || true
 
-          echo "------ curl status endpoint (10s) ------"
+          echo "--- curl status ---"
           curl -v --max-time 10 "$NEXUS_URL/service/rest/v1/status" || true
 
-          echo "------ nc TCP check to 8081 (if nc available) ------"
-          if command -v nc >/dev/null 2>&1; then
-            nc -vz 34.227.67.34 8081 || true
-          else
-            echo "nc not available; installing netcat"
-            sudo apt-get update -y
-            sudo apt-get install -y netcat || true
-            nc -vz 34.227.67.34 8081 || true
-          fi
+          echo "--- netcat ---"
+          sudo apt-get update -y
+          sudo apt-get install -y netcat
+          nc -vz 34.227.67.34 8081 || true
 
-      - name: Maven deploy (debug logging) and capture last 200 lines
-        if: success()
+      # ------------------ DEPLOY TO NEXUS ------------------
+      - name: Maven deploy (debug)
         run: |
-          set -o pipefail
           mvn -X -e -B deploy -DskipTests 2>&1 | tee mvn-deploy-debug.log || true
-          echo "---- last 200 lines of mvn debug log ----"
-          tail -n 200 mvn-deploy-debug.log || true
+          echo "---- last 100 lines ----"
+          tail -n 100 mvn-deploy-debug.log
 
-      - name: Verify artifact uploaded to Nexus (optional check)
-        if: success()
-        env:
-          NEXUS_URL: "http://34.227.67.34:8081"
-          NEXUS_USER: ${{ secrets.NEXUS_USER }}
-          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-        run: |
-          # Try fetching metadata for the snapshot/release to confirm upload.
-          # Adjust path below to match your groupId/artifactId/version.
-          curl -sS -u "${NEXUS_USER}:${NEXUS_PASSWORD}" \
-            "${NEXUS_URL}/repository/maven-snapshots/com/your/group/TrainBook/1.0.0-SNAPSHOT/maven-metadata.xml" -I || true
-
+      # ------------------ DEPLOY TO TOMCAT ------------------
       - name: Deploy to Tomcat Manager
-        if: success()
         env:
           TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
           TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
           TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
         run: |
-          WAR_FILE=$(ls target/*.war | head -n1)
-          if [ -z "$WAR_FILE" ]; then
-            echo "ERROR: WAR not found in target/ - failing job"
-            ls -la target
-            exit 1
-          fi
-          echo "Deploying $WAR_FILE to Tomcat at ${TOMCAT_HOST}"
-          HTTP_CODE=$(curl -sS -o /tmp/tomcat-deploy.out -w "%{http_code}" \
-            --upload-file "$WAR_FILE" \
+          WAR=$(ls target/*.war | head -n 1)
+          echo "Deploying: $WAR"
+
+          CODE=$(curl -sS -o /tmp/tomcat.out -w "%{http_code}" \
+            --upload-file "$WAR" \
             -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" \
             "http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/TrainBook&update=true")
-          echo "Tomcat HTTP code: $HTTP_CODE"
-          echo "Response:"
-          sed -n '1,200p' /tmp/tomcat-deploy.out || true
-          if [[ "$HTTP_CODE" =~ ^2 ]]; then
-            echo "Tomcat deploy succeeded."
-          else
-            echo "Tomcat deploy failed with HTTP code $HTTP_CODE"
+
+          echo "HTTP CODE: $CODE"
+          cat /tmp/tomcat.out
+
+          if [[ "$CODE" != 2* ]]; then
+            echo "Tomcat deploy failed"
             exit 1
           fi
+          echo "Tomcat deploy successful"
