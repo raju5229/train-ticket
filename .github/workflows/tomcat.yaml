@@ -81,7 +81,7 @@ jobs:
             -Dsonar.host.url="${{ secrets.SONAR_HOST }}" \
             -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
 
-      - name: Debug: Check DNS / TCP / HTTP to Nexus from runner
+      - name: Debug:runner
         env:
           NEXUS_URL: "http://34.227.67.34:8081"
         run: |
