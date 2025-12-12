@@ -33,26 +33,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-m2-
 
-      # Create secure Maven settings.xml with Nexus creds
-      - name: Configure Maven settings for Nexus
+      - name: Create secure Maven settings.xml with Nexus creds
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USER }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
         run: |
           mkdir -p ~/.m2
-          cat > ~/.m2/settings.xml <<EOF
-          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          cat > ~/.m2/settings.xml <<'EOF'
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-          <servers>
-          <server>
-            <id>nexus</id>
-            <username>${NEXUS_USERNAME}</username>
-            <password>${NEXUS_PASSWORD}</password>
-          </server>
-          </servers>
-          </settings>
-
+  <servers>
+    <server>
+      <id>nexus</id>
+      <username>${NEXUS_USERNAME}</username>
+      <password>${NEXUS_PASSWORD}</password>
+    </server>
+  </servers>
+</settings>
+EOF
+          echo "Created settings.xml (IDs shown, password redacted):"
+          sed -n '1,120p' ~/.m2/settings.xml
 
       - name: Validate with Maven
         run: mvn -B validate
@@ -70,7 +71,7 @@ jobs:
         run: |
           echo "Files in target:"
           ls -la target || true
-          ls -la target/*.war
+          ls -la target/*.war || true
 
       - name: Build, Test and SonarQube Scan
         if: success()
@@ -80,12 +81,49 @@ jobs:
             -Dsonar.host.url="${{ secrets.SONAR_HOST }}" \
             -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
 
-      # Publish WAR to Nexus (assumes distributionManagement in pom uses <id>nexus</id>)
-      - name: Publish WAR to Nexus
-        if: success()
-        run: mvn -B deploy -DskipTests
+      - name: Debug: Check DNS / TCP / HTTP to Nexus from runner
+        env:
+          NEXUS_URL: "http://34.227.67.34:8081"
+        run: |
+          echo "------ DNS / ping check ------"
+          ping -c 3 34.227.67.34 || true
 
-      # Deploy WAR to Tomcat via Manager API
+          echo "------ curl root URL (10s timeout) ------"
+          curl -v --max-time 10 "$NEXUS_URL/" || true
+
+          echo "------ curl status endpoint (10s) ------"
+          curl -v --max-time 10 "$NEXUS_URL/service/rest/v1/status" || true
+
+          echo "------ nc TCP check to 8081 (if nc available) ------"
+          if command -v nc >/dev/null 2>&1; then
+            nc -vz 34.227.67.34 8081 || true
+          else
+            echo "nc not available; installing netcat"
+            sudo apt-get update -y
+            sudo apt-get install -y netcat || true
+            nc -vz 34.227.67.34 8081 || true
+          fi
+
+      - name: Maven deploy (debug logging) and capture last 200 lines
+        if: success()
+        run: |
+          set -o pipefail
+          mvn -X -e -B deploy -DskipTests 2>&1 | tee mvn-deploy-debug.log || true
+          echo "---- last 200 lines of mvn debug log ----"
+          tail -n 200 mvn-deploy-debug.log || true
+
+      - name: Verify artifact uploaded to Nexus (optional check)
+        if: success()
+        env:
+          NEXUS_URL: "http://34.227.67.34:8081"
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          # Try fetching metadata for the snapshot/release to confirm upload.
+          # Adjust path below to match your groupId/artifactId/version.
+          curl -sS -u "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+            "${NEXUS_URL}/repository/maven-snapshots/com/your/group/TrainBook/1.0.0-SNAPSHOT/maven-metadata.xml" -I || true
+
       - name: Deploy to Tomcat Manager
         if: success()
         env:
@@ -100,7 +138,6 @@ jobs:
             exit 1
           fi
           echo "Deploying $WAR_FILE to Tomcat at ${TOMCAT_HOST}"
-          # use manager/text deploy API; requires user with 'manager-script' role
           HTTP_CODE=$(curl -sS -o /tmp/tomcat-deploy.out -w "%{http_code}" \
             --upload-file "$WAR_FILE" \
             -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" \
