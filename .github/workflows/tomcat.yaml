@@ -58,11 +58,11 @@ jobs:
         run: ls -lh target/*.war
 
       # ------------------ NEXUS CONNECTIVITY DEBUG ------------------
-      - name: Debug Nexus Connectivity
+      - name: Debug Nexus Connectivity (no-install)
         env:
           NEXUS_URL: "http://34.227.67.34:8081"
         run: |
-          echo "--- ping ---"
+          echo "--- ping (may be blocked) ---"
           ping -c 3 34.227.67.34 || true
 
           echo "--- curl root ---"
@@ -71,11 +71,9 @@ jobs:
           echo "--- curl status ---"
           curl -v --max-time 10 "$NEXUS_URL/service/rest/v1/status" || true
 
-          echo "--- netcat ---"
-          sudo apt-get update -y
-          sudo apt-get install -y netcat
-          nc -vz 34.227.67.34 8081 || true
-
+          echo "--- TCP check using bash /dev/tcp ---"
+          # returns 0 on success, non-zero on fail
+          timeout 5 bash -c "cat < /dev/tcp/34.227.67.34/8081" && echo "TCP OPEN" || echo "TCP CLOSED or FILTERED
       # ------------------ DEPLOY TO NEXUS ------------------
       - name: Maven deploy (debug)
         run: |
