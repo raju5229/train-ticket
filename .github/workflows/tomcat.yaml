@@ -58,64 +58,15 @@ jobs:
         run: ls -lh target/*.war
 
       # ------------------ NEXUS CONNECTIVITY DEBUG ------------------
-      - name: Debug Nexus Connectivity (safe, non-fatal)
-        env:
-          NEXUS_URL: "http://34.227.67.34:8081"
-          NEXUS_IP: "34.227.67.34"
-          NEXUS_PORT: "8081"
+      - name: Publish WAR to Nexus
+        run: mvn deploy
+
+      # Deploy WAR to Tomcat
+      - name: Deploy to tomcat
         run: |
-          set -uo pipefail
-          echo "== START CONNECTIVITY DEBUG =="
-
-          echo
-          echo "[1] ping (may be blocked)"
-          ping -c 3 "$NEXUS_IP" > /tmp/ping.out 2>&1 || true
-          echo "ping output (first 8 lines):"
-          head -n 8 /tmp/ping.out || true
-
-          echo
-          echo "[2] curl root (10s timeout)"
-          curl -sS -D /tmp/curl-root-headers.out --max-time 10 "$NEXUS_URL/" -o /tmp/curl-root-body.out || true
-          echo "curl exit code: $?"
-          echo "Response headers (root):"
-          sed -n '1,120p' /tmp/curl-root-headers.out || true
-          echo "Body (first 120 chars):"
-          head -c 120 /tmp/curl-root-body.out || true
-
-          echo
-          echo "[3] curl status endpoint (10s timeout)"
-          curl -sS -D /tmp/curl-status-headers.out --max-time 10 "$NEXUS_URL/service/rest/v1/status" -o /tmp/curl-status-body.out || true
-          echo "curl status exit code: $?"
-          echo "Response headers (status):"
-          sed -n '1,120p' /tmp/curl-status-headers.out || true
-          echo "Body (first 500 chars):"
-          head -c 500 /tmp/curl-status-body.out || true
-
-          echo
-          echo "[4] TCP check via /dev/tcp"
-          # this returns 0 if a TCP connection can be opened
-          timeout 5 bash -c "cat < /dev/tcp/${NEXUS_IP}/${NEXUS_PORT}" > /dev/null 2>&1
-          TCP_RC=$?
-          if [ "$TCP_RC" -eq 0 ]; then
-            echo "TCP: OPEN (connection accepted)"
-          elif [ "$TCP_RC" -eq 124 ]; then
-            echo "TCP: TIMED OUT (likely filtered/firewalled)"
-          else
-            echo "TCP: CLOSED or other error (rc=$TCP_RC)"
-          fi
-
-          echo
-          echo "[5] traceroute (first 10 hops) - useful if TCP blocked"
-          # traceroute may not be installed; try with tracepath fallback
-          if command -v traceroute >/dev/null 2>&1; then
-            sudo traceroute -m 10 "$NEXUS_IP" || true
-          else
-            tracepath -n "$NEXUS_IP" 2>/dev/null | head -n 10 || true
-          fi
-
-          echo
-          echo "== END CONNECTIVITY DEBUG =="
-
+          curl -v -u "${{ secrets.TOMCAT_USER }}:${{ secrets.TOMCAT_PASSWORD }}" \
+            -T target/TrainBook-1.0.0-SNAPSHOT.war \
+            "http://${{ secrets.TOMCAT_HOST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
 
       # ------------------ DEPLOY TO TOMCAT ------------------
       - name: Deploy to Tomcat Manager
