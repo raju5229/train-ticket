@@ -1,23 +1,37 @@
 name: ci/cd pipeline to deploy to tomcat
 
-on: 
+on:
   push:
     branches:
       - master
 
+permissions:
+  contents: read
+
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
+    env:
+      MAVEN_OPTS: "-Xmx1024m"
 
     steps:
-      - name: checkout code
-        uses: actions/checkout@v3
-      
-      - name: set-up jdk
-        uses: actions/setup-java@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin) and enable Maven caching
+        uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
+          cache: maven
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-m2-
 
       # Create secure Maven settings.xml with Nexus creds
       - name: Configure Maven settings for Nexus
@@ -28,47 +42,75 @@ jobs:
           mkdir -p ~/.m2
           cat > ~/.m2/settings.xml <<EOF
           <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
-                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
-            <servers>
-              <server>
-                <id>nexus</id>
-                <username>${NEXUS_USERNAME}</username>
-                <password>${NEXUS_PASSWORD}</password>
-              </server>
-            </servers>
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+          <servers>
+          <server>
+            <id>nexus</id>
+            <username>${NEXUS_USERNAME}</username>
+            <password>${NEXUS_PASSWORD}</password>
+          </server>
+          </servers>
           </settings>
-          EOF
 
-      - name: validate with maven
-        run: mvn validate
 
-      - name: compile with maven
-        run: mvn compile
+      - name: Validate with Maven
+        run: mvn -B validate
 
-      - name: test with maven
-        run: mvn test
+      - name: Compile with Maven
+        run: mvn -B compile
 
-      - name: package with maven
-        run: mvn package
+      - name: Test with Maven
+        run: mvn -B test
 
-      - name: verify WAR file
-        run: ls -lh target/
+      - name: Package with Maven
+        run: mvn -B package
+
+      - name: Verify WAR file exists
+        run: |
+          echo "Files in target:"
+          ls -la target || true
+          ls -la target/*.war
 
       - name: Build, Test and SonarQube Scan
+        if: success()
         run: |
-          mvn clean verify sonar:sonar \
+          mvn -B clean verify sonar:sonar \
             -Dsonar.projectKey=train-ticket-reservation \
             -Dsonar.host.url="${{ secrets.SONAR_HOST }}" \
             -Dsonar.login="${{ secrets.SONAR_TOKEN }}"
 
-      # Deploy to Nexus using distributionManagement in POM
+      # Publish WAR to Nexus (assumes distributionManagement in pom uses <id>nexus</id>)
       - name: Publish WAR to Nexus
-        run: mvn deploy
+        if: success()
+        run: mvn -B deploy -DskipTests
 
-      # Deploy WAR to Tomcat
-      - name: Deploy to tomcat
+      # Deploy WAR to Tomcat via Manager API
+      - name: Deploy to Tomcat Manager
+        if: success()
+        env:
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+          TOMCAT_PASSWORD: ${{ secrets.TOMCAT_PASSWORD }}
+          TOMCAT_HOST: ${{ secrets.TOMCAT_HOST }}
         run: |
-          curl -v -u "${{ secrets.TOMCAT_USER }}:${{ secrets.TOMCAT_PASSWORD }}" \
-            -T target/TrainBook-1.0.0-SNAPSHOT.war \
-            "http://${{ secrets.TOMCAT_HOST }}:8080/manager/text/deploy?path=/TrainBook&update=true"
+          WAR_FILE=$(ls target/*.war | head -n1)
+          if [ -z "$WAR_FILE" ]; then
+            echo "ERROR: WAR not found in target/ - failing job"
+            ls -la target
+            exit 1
+          fi
+          echo "Deploying $WAR_FILE to Tomcat at ${TOMCAT_HOST}"
+          # use manager/text deploy API; requires user with 'manager-script' role
+          HTTP_CODE=$(curl -sS -o /tmp/tomcat-deploy.out -w "%{http_code}" \
+            --upload-file "$WAR_FILE" \
+            -u "${TOMCAT_USER}:${TOMCAT_PASSWORD}" \
+            "http://${TOMCAT_HOST}:8080/manager/text/deploy?path=/TrainBook&update=true")
+          echo "Tomcat HTTP code: $HTTP_CODE"
+          echo "Response:"
+          sed -n '1,200p' /tmp/tomcat-deploy.out || true
+          if [[ "$HTTP_CODE" =~ ^2 ]]; then
+            echo "Tomcat deploy succeeded."
+          else
+            echo "Tomcat deploy failed with HTTP code $HTTP_CODE"
+            exit 1
+          fi
